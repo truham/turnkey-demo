@@ -23,7 +23,7 @@ A Next.js app using `@turnkey/react-wallet-kit` that implements the embedded wal
 
 ```bash
 cd turnkey-sdk
-cp env.example .env   # fill in values below
+cp .env.example .env   # fill in values below
 npm install
 npm run dev
 ```
@@ -32,11 +32,11 @@ Required `.env` values:
 
 | Variable | Description |
 |---|---|
-| `NEXT_PUBLIC_TURNKEY_API_PUBLIC_KEY` | Turnkey root API public key |
-| `NEXT_PUBLIC_TURNKEY_API_PRIVATE_KEY` | Turnkey root API private key |
-| `NEXT_PUBLIC_TURNKEY_ORGANIZATION_ID` | Root org ID |
+| `NEXT_PUBLIC_ORGANIZATION_ID` | Turnkey root org ID |
+| `NEXT_PUBLIC_AUTH_PROXY_CONFIG_ID` | Auth proxy config ID from Turnkey Dashboard → Wallet Kit |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Google OAuth client ID (Web application) |
 | `NEXT_PUBLIC_REDIRECT_URI` | OAuth redirect URI (e.g. `http://localhost:3000`) |
+| `NEXT_PUBLIC_DISCORD_CLIENT_ID` | Discord OAuth client ID |
 | `NEXT_PUBLIC_SEPOLIA_RPC_URL` | Sepolia RPC endpoint (Alchemy or Infura) |
 
 For Google OAuth: create a Web application credential in [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials), add `NEXT_PUBLIC_REDIRECT_URI` as an Authorized redirect URI, and enable Google in Turnkey Dashboard → Wallet Kit → Authentication.

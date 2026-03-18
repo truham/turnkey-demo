@@ -1,0 +1,25 @@
+{
+  "name": "turnkey-api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@turnkey/api-key-stamper": "^0.6.2",
+    "@turnkey/http": "^3.17.0",
+    "bip39": "^3.1.0",
+    "dotenv": "^17.3.1",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "prettier": "^3.8.1"
+  }
+}

@@ -1,0 +1,997 @@
+{
+  "info": {
+    "name": "Turnkey API",
+    "_postman_id": "turnkey-api-collection",
+    "description": "Turnkey REST API collection with auto X-Stamp generation.\n\nSetup:\n1. Set collection variables: API_PUBLIC_KEY, API_PRIVATE_KEY_HEX, ORGANIZATION_ID\n2. The pre-request script auto-generates X-Stamp for every request\n3. BASE_URL defaults to https://api.turnkey.com\n\nStamp algorithm:\n- ECDSA-P256 sign the raw JSON body bytes\n- DER-encode the signature, hex-encode it\n- Base64URL encode JSON: {publicKey, signature, scheme}\n- Set as X-Stamp header",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "https://api.turnkey.com"
+    },
+    {
+      "key": "API_PUBLIC_KEY",
+      "value": "03e369a8b6b822f49773aa06269062f3cd4b51218b2a13063f5e3fcb9ea326eaa8"
+    },
+    {
+      "key": "ORGANIZATION_ID",
+      "value": "e067c158-42ef-461a-afe3-b0f283a62eb2"
+    },
+    {
+      "key": "JWK_X",
+      "value": "42motrgi9JdzqgYmkGLzzUtRIYsqEwY_Xj_LnqMm6qg",
+      "description": "P-256 public key x coordinate (base64url). Derived from API_PUBLIC_KEY."
+    },
+    {
+      "key": "JWK_Y",
+      "value": "nhgSSFp235yneoa6wYZuSvXB0F51_CkicyoSizNlnpk",
+      "description": "P-256 public key y coordinate (base64url). Derived from API_PUBLIC_KEY."
+    },
+    {
+      "key": "JWK_D",
+      "value": "WBZDS2inVoEzvLxuwQpycqV1bDt6DRJ18LkNo4jdV4A",
+      "type": "secret",
+      "description": "P-256 private key scalar (base64url). Keep secret — used to sign requests."
+    },
+    {
+      "key": "X_STAMP",
+      "value": "",
+      "description": "Auto-populated by the collection pre-request script before each request. Do not set manually."
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Auto-generate X-Stamp header for every Turnkey request.",
+          "// Uses Postman's built-in done() callback to block the request until",
+          "// the async crypto.subtle signing completes. Without calling done(),",
+          "// Postman fires the request immediately with a stale/missing X_STAMP.",
+          "//",
+          "// Stamp algorithm (matches @turnkey/api-key-stamper exactly):",
+          "//   1. Import private key as JWK (SubtleCrypto only accepts JWK for P-256 signing)",
+          "//   2. ECDSA-P256 + SHA-256 sign the raw request body bytes",
+          "//   3. Convert IEEE P1363 output (r||s) → DER-encoded ASN.1",
+          "//   4. Build { publicKey, scheme, signature } — field order matters",
+          "//   5. base64url-encode → X-Stamp header",
+          "",
+          "// done is Postman's async signal — guard for versions that don't inject it",
+          "if (typeof done === 'undefined') { var done = function() {}; }",
+          "",
+          "function generateStamp(done) {",
+          "  const publicKey = pm.collectionVariables.get('API_PUBLIC_KEY');",
+          "  const jwkX      = pm.collectionVariables.get('JWK_X');",
+          "  const jwkY      = pm.collectionVariables.get('JWK_Y');",
+          "  const jwkD      = pm.collectionVariables.get('JWK_D');",
+          "  const rawBody   = pm.variables.replaceIn(pm.request.body ? pm.request.body.toString() : '{}');",
+          "  console.log('Signing body:', rawBody.substring(0, 80));",
+          "",
+          "  function convertIeeeToDer(ieee) {",
+          "    const ieeeArr = new Uint8Array(ieee);",
+          "    function toUnsignedBigNum(bytes) {",
+          "      let start = 0;",
+          "      while (start < bytes.length && bytes[start] === 0) start++;",
+          "      if (start === bytes.length) start = bytes.length - 1;",
+          "      const extraZero = (bytes[start] & 128) === 128 ? 1 : 0;",
+          "      const res = new Uint8Array(bytes.length - start + extraZero);",
+          "      res.set(bytes.subarray(start), extraZero);",
+          "      return res;",
+          "    }",
+          "    const r = toUnsignedBigNum(ieeeArr.subarray(0, ieeeArr.length / 2));",
+          "    const s = toUnsignedBigNum(ieeeArr.subarray(ieeeArr.length / 2));",
+          "    const bodyLen = 1 + 1 + r.length + 1 + 1 + s.length;",
+          "    let der; let offset = 0;",
+          "    if (bodyLen >= 128) {",
+          "      der = new Uint8Array(bodyLen + 3);",
+          "      der[offset++] = 48; der[offset++] = 129; der[offset++] = bodyLen;",
+          "    } else {",
+          "      der = new Uint8Array(bodyLen + 2);",
+          "      der[offset++] = 48; der[offset++] = bodyLen;",
+          "    }",
+          "    der[offset++] = 2; der[offset++] = r.length; der.set(r, offset); offset += r.length;",
+          "    der[offset++] = 2; der[offset++] = s.length; der.set(s, offset);",
+          "    return der;",
+          "  }",
+          "",
+          "  crypto.subtle.importKey(",
+          "    'jwk',",
+          "    { kty: 'EC', crv: 'P-256', x: jwkX, y: jwkY, d: jwkD },",
+          "    { name: 'ECDSA', namedCurve: 'P-256' },",
+          "    false,",
+          "    ['sign']",
+          "  ).then(function(cryptoKey) {",
+          "    return crypto.subtle.sign(",
+          "      { name: 'ECDSA', hash: 'SHA-256' },",
+          "      cryptoKey,",
+          "      new TextEncoder().encode(rawBody)",
+          "    );",
+          "  }).then(function(sigBuffer) {",
+          "    const derSig = convertIeeeToDer(sigBuffer);",
+          "    const sigHex = Array.from(derSig).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');",
+          "    const stampJson = JSON.stringify({",
+          "      publicKey: publicKey,",
+          "      scheme: 'SIGNATURE_SCHEME_TK_API_P256',",
+          "      signature: sigHex",
+          "    });",
+          "    const stamp = btoa(stampJson).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=/g, '');",
+          "    pm.environment.set('X_STAMP', stamp);",
+          "    console.log('✓ X-Stamp set, sending request');",
+          "    done();",
+          "  }).catch(function(e) {",
+          "    console.error('✗ Stamp failed:', e.message);",
+          "    done(e);",
+          "  });",
+          "}",
+          "",
+          "generateStamp(done);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Queries (Read)",
+      "item": [
+        {
+          "name": "whoami",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/whoami",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Returns the current user's identity (userId, username, organizationId, organizationName). Quick sanity check that your API key + stamp are working."
+          }
+        },
+        {
+          "name": "list_wallets",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/list_wallets",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "get_wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/get_wallet",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"walletId\": \"WALLET_ID_HERE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "list_wallet_accounts",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/list_wallet_accounts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"walletId\": \"WALLET_ID_HERE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "list_users",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/list_users",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "get_user",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/get_user",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"userId\": \"USER_ID_HERE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "list_policies",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/list_policies",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "get_policy",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/get_policy",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"policyId\": \"POLICY_ID_HERE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "get_activity",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/get_activity",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"activityId\": \"ACTIVITY_ID_HERE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Poll the status of any activity. Statuses: COMPLETED, PENDING, REQUIRES_CONSENSUS, FAILED, REJECTED."
+          }
+        },
+        {
+          "name": "list_activities",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/list_activities",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"filterByStatus\": [],\n  \"filterByType\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "list_private_keys",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/list_private_keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "get_authenticators",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/get_authenticators",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"userId\": \"USER_ID_HERE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "list_sub_organizations",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/query/list_suborgs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"filterType\": \"\",\n  \"filterValue\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Root org only. filterType can be 'NAME', 'ID', 'USERNAME', 'EMAIL', 'PUBLIC_KEY' to search sub-orgs."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Activities (Write)",
+      "item": [
+        {
+          "name": "create_wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/create_wallet",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_CREATE_WALLET\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"walletName\": \"My Wallet\",\n    \"accounts\": [\n      {\n        \"curve\": \"CURVE_SECP256K1\",\n        \"pathFormat\": \"PATH_FORMAT_BIP32\",\n        \"path\": \"m/44'/60'/0'/0/0\",\n        \"addressFormat\": \"ADDRESS_FORMAT_ETHEREUM\"\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "create_wallet_accounts",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/create_wallet_accounts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_CREATE_WALLET_ACCOUNTS\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"walletId\": \"WALLET_ID_HERE\",\n    \"accounts\": [\n      {\n        \"curve\": \"CURVE_SECP256K1\",\n        \"pathFormat\": \"PATH_FORMAT_BIP32\",\n        \"path\": \"m/44'/60'/0'/0/1\",\n        \"addressFormat\": \"ADDRESS_FORMAT_ETHEREUM\"\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Derive additional accounts from an existing wallet. path index increments (0/0/1, 0/0/2, etc). Same mnemonic, different derived key."
+          }
+        },
+        {
+          "name": "sign_transaction",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/sign_transaction",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_SIGN_TRANSACTION_V2\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"signWith\": \"WALLET_ACCOUNT_ADDRESS_HERE\",\n    \"unsignedTransaction\": \"02e680843b9aca008504a817c80082520894000000000000000000000000000000000000000080c0\",\n    \"type\": \"TRANSACTION_TYPE_ETHEREUM\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Signs a structured Ethereum tx. Uses RLP-encoded hex. Enables eth.tx.* policy conditions (e.g. eth.tx.to, eth.tx.value). See sign-transaction.mjs for RLP encoding details."
+          }
+        },
+        {
+          "name": "sign_raw_payload",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/sign_raw_payload",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"signWith\": \"WALLET_ACCOUNT_ADDRESS_OR_KEY_ID\",\n    \"payload\": \"48656c6c6f2c20576f726c6421\",\n    \"encoding\": \"PAYLOAD_ENCODING_HEXADECIMAL\",\n    \"hashFunction\": \"HASH_FUNCTION_SHA256\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Signs arbitrary bytes. No tx parsing — cannot use eth.tx.* policy conditions. payload is hex-encoded."
+          }
+        },
+        {
+          "name": "export_wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/export_wallet",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_EXPORT_WALLET\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"walletId\": \"WALLET_ID_HERE\",\n    \"targetPublicKey\": \"TARGET_UNCOMPRESSED_P256_PUBKEY_HEX\",\n    \"language\": \"MNEMONIC_LANGUAGE_ENGLISH\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "targetPublicKey must be 65-byte uncompressed P-256 key (04..., 130 hex chars). Bundle is encrypted — use decryptExportBundle() client-side to get the mnemonic."
+          }
+        },
+        {
+          "name": "create_policy",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/create_policy",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_CREATE_POLICY\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"policyName\": \"My Policy\",\n    \"effect\": \"EFFECT_ALLOW\",\n    \"consensus\": \"approvers.any(user, user.id == 'USER_ID_HERE')\",\n    \"condition\": \"activity.type == 'ACTIVITY_TYPE_SIGN_TRANSACTION'\",\n    \"notes\": \"\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "effect: EFFECT_ALLOW or EFFECT_DENY. consensus: CEL expression over approvers. condition: CEL expression over activity. Eval order: root quorum > explicit DENY > explicit ALLOW > implicit DENY."
+          }
+        },
+        {
+          "name": "delete_policy",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/delete_policy",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_DELETE_POLICY\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"policyId\": \"POLICY_ID_HERE\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "create_users",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/create_users",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_CREATE_USERS_V2\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"users\": [\n      {\n        \"userName\": \"new-user\",\n        \"userEmail\": \"user@example.com\",\n        \"apiKeys\": [\n          {\n            \"apiKeyName\": \"default\",\n            \"publicKey\": \"UNCOMPRESSED_P256_PUBKEY_HEX\"\n          }\n        ],\n        \"authenticators\": [],\n        \"oauthProviders\": [],\n        \"userTags\": []\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Creates users within the org (not sub-orgs). userEmail must be unique. publicKey must be uncompressed P-256. userTags used in policy consensus expressions."
+          }
+        },
+        {
+          "name": "create_api_keys",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/create_api_keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_CREATE_API_KEYS_V2\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"userId\": \"USER_ID_HERE\",\n    \"apiKeys\": [\n      {\n        \"apiKeyName\": \"new-key\",\n        \"publicKey\": \"UNCOMPRESSED_P256_PUBKEY_HEX\",\n        \"expirationSeconds\": \"3600\"\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Adds API keys to an existing user. expirationSeconds is optional — omit for permanent. publicKey must be unique across the org. Use for delegated session keys."
+          }
+        },
+        {
+          "name": "delete_api_keys",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/delete_api_keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_DELETE_API_KEYS\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"userId\": \"USER_ID_HERE\",\n    \"apiKeyIds\": [\"API_KEY_ID_HERE\"]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "create_sub_organization",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/create_sub_organization",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"subOrganizationName\": \"user-sub-org\",\n    \"rootUsers\": [\n      {\n        \"userName\": \"root-user\",\n        \"userEmail\": \"root@example.com\",\n        \"apiKeys\": [],\n        \"authenticators\": [],\n        \"oauthProviders\": []\n      }\n    ],\n    \"rootQuorumThreshold\": 1,\n    \"wallet\": {\n      \"walletName\": \"Default Wallet\",\n      \"accounts\": [\n        {\n          \"curve\": \"CURVE_SECP256K1\",\n          \"pathFormat\": \"PATH_FORMAT_BIP32\",\n          \"path\": \"m/44'/60'/0'/0/0\",\n          \"addressFormat\": \"ADDRESS_FORMAT_ETHEREUM\"\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Creates an isolated org under the root org. Each sub-org has its own root quorum, policies, wallets. Root org keys cannot submit activities to sub-orgs without being a registered user inside."
+          }
+        },
+        {
+          "name": "import_wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/import_wallet",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_IMPORT_WALLET\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"walletName\": \"Imported Wallet\",\n    \"encryptedBundle\": \"ENCRYPTED_BUNDLE_FROM_INIT_IMPORT\",\n    \"accounts\": [\n      {\n        \"curve\": \"CURVE_SECP256K1\",\n        \"pathFormat\": \"PATH_FORMAT_BIP32\",\n        \"path\": \"m/44'/60'/0'/0/0\",\n        \"addressFormat\": \"ADDRESS_FORMAT_ETHEREUM\"\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Step 2 of import flow. Step 1 is init_import_wallet which returns a targetPublicKey from the enclave. You encrypt the mnemonic to that key, then submit here. Inverse of export_wallet."
+          }
+        },
+        {
+          "name": "init_import_wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/init_import_wallet",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_INIT_IMPORT_WALLET\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"userId\": \"USER_ID_HERE\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Step 1 of import. Returns importBundle containing enclave's targetPublicKey. Encrypt your mnemonic to that key, then call import_wallet."
+          }
+        },
+        {
+          "name": "update_policy",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Stamp",
+                "value": "{{X_STAMP}}",
+                "description": "Auto-generated by pre-request script"
+              }
+            ],
+            "url": "{{BASE_URL}}/public/v1/submit/update_policy",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"ACTIVITY_TYPE_UPDATE_POLICY_V2\",\n  \"timestampMs\": \"{{$timestamp}}000\",\n  \"organizationId\": \"{{ORGANIZATION_ID}}\",\n  \"parameters\": {\n    \"policyId\": \"POLICY_ID_HERE\",\n    \"policyName\": \"Updated policy name\",\n    \"policyEffect\": \"EFFECT_ALLOW\",\n    \"policyCondition\": \"eth.tx.chain_id == 1\",\n    \"policyNotes\": \"Updated notes\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Full REPLACE of an existing policy. Uses ACTIVITY_TYPE_UPDATE_POLICY_V2. Field names differ from create_policy: policyEffect not effect, policyCondition not condition, policyNotes not notes. Always send all fields — omitting one blanks it out. Result only echoes policyId; call get_policy to verify the change landed."
+          }
+        }
+      ]
+    }
+  ]
+}

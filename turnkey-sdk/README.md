@@ -12,14 +12,14 @@ A Next.js app built as part of the [Turnkey embedded wallet quickstart](https://
 - **Step-up auth** — re-authenticates with a passkey via `StamperType.Passkey`
 - **Register / remove passkey** — prerequisite for step-up auth
 - **Add phone number** — SMS OTP auth (enterprise-gated)
-- **Destination policy** _(bonus)_ — demonstrates Turnkey's policy engine with live enforcement
+- **Destination policy** *(bonus)* — demonstrates Turnkey's policy engine with live enforcement
 
 ## Setup
 
 1. Copy `.env.example` to `.env` and fill in your values:
 
 ```bash
-cp env.example .env
+cp .env.example .env
 ```
 
 Required variables:
@@ -32,7 +32,7 @@ Required variables:
 
 For Google OAuth: create a Web application credential in [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials), add `NEXT_PUBLIC_REDIRECT_URI` as an Authorized redirect URI, and enable Google in Turnkey Dashboard → Wallet Kit → Authentication.
 
-2. Install dependencies and run:
+1. Install dependencies and run:
 
 ```bash
 npm install
